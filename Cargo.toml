@@ -1,0 +1,9 @@
+[package]
+name = "basic_shell"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+home = "0.5.11"
+regex = "1.11.1"
+signal-hook = "0.3.17"
