@@ -15,7 +15,8 @@ pub fn parse(cmd_argument: &mut String) -> Command {
         Regex::new(&format! {"^({}[ ]*[|][|][ ]*)+{}[ ]*$",basic_cmd, basic_cmd}).unwrap();
 
     if basic_background.is_match(cmd_argument) {
-        let cmd: Vec<&str> = cmd_argument.split_whitespace().collect();
+        let mut cmd: Vec<&str> = cmd_argument.split_whitespace().collect();
+        cmd.pop().unwrap();
         let res = extract_simple(&cmd);
         return match res.0 {
             Some(command) => Command::SimpleCommand(SimpleCommand {
@@ -82,10 +83,10 @@ fn extract_simple<'a>(arguments: &'a Vec<&str>) -> (Option<&'a str>, Vec<String>
         None
     };
     let args: Vec<String>;
-    if arguments.len() < 2 {
+    if arguments.len() < 1 {
         args = Vec::new();
     } else {
-        args = arguments[1..].iter().map(|s| String::from(*s)).collect();
+        args = arguments.iter().map(|s| String::from(*s)).collect();
     }
     (cmd, args)
 }

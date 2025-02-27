@@ -1,29 +1,61 @@
 use std::{
     error::Error,
     io::{self, stdin, Read, Write},
+    os::fd::AsRawFd,
+    sync::atomic::{AtomicBool, Ordering},
     thread,
 };
 
 use command::command::cmd::{self, Command, Execute, ProcessStatus, SimpleCommand};
-use signal_hook::{consts::SIGINT, iterator::Signals};
+use nix::{
+    libc::{self, wait, WNOHANG, WNOWAIT},
+    sys::{
+        signal::{
+            self, sigaction, SaFlags, SigAction, SigHandler, SigSet, SigmaskHow,
+            Signal::{self, SIGCHLD},
+        },
+        wait::{self, waitpid, WaitPidFlag},
+    },
+    unistd::Pid,
+};
+use signal_hook::{consts::SIGINT, consts::SIGSTOP, iterator::Signals};
 
 mod command;
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let mut signals = Signals::new([SIGINT])?;
+static SIGNALED: AtomicBool = AtomicBool::new(false);
 
-    thread::spawn(move || {
-        for sig in signals.forever() {
-            match sig {
-                SIGINT => {
-                    println!("Sigterm received");
-                }
-                (_) => {
-                    println!("Signal");
-                }
-            }
+extern "C" fn handle_sigchild(
+    sig: libc::c_int,
+    info: *mut libc::siginfo_t,
+    _context: *mut libc::c_void,
+) {
+    unsafe {
+        if !info.is_null() {
+            let pid = (*info).si_pid(); // PID of the process that sent the signal
+            let mut code: i32;
+            waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)).unwrap();
         }
-    });
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut mask = SigSet::empty();
+    mask.add(Signal::SIGSTOP);
+    mask.add(Signal::SIGKILL);
+    mask.add(Signal::SIGTTOU);
+    mask.add(Signal::SIGINT);
+    nix::sys::signal::sigprocmask(SigmaskHow::SIG_BLOCK, Some(&mask), None);
+
+    let sig_action = SigAction::new(
+        SigHandler::SigAction(handle_sigchild), // Use SigAction to access siginfo
+        SaFlags::SA_SIGINFO,                    // SA_SIGINFO gives access to siginfo_t
+        SigSet::empty(),                        // No additional blocked signals
+    );
+
+    unsafe {
+        signal::sigaction(Signal::SIGCHLD, &sig_action).expect("Failed to set SIGCHLD handler");
+    }
+
     let mut processList: Vec<ProcessStatus> = Vec::new();
     loop {
         print!("bshell> ");

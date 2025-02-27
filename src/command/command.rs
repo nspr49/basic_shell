@@ -1,8 +1,25 @@
 pub mod cmd {
     use home::home_dir;
+    use nix::{
+        libc::{
+            dup, dup2, execvpe, exit, getpgid, getpid, kill, killpg, STDIN_FILENO, STDOUT_FILENO,
+        },
+        sys::{
+            signal::{sigprocmask, SigSet, SigmaskHow, Signal},
+            wait::{self, wait, waitpid, WaitStatus},
+        },
+        unistd::{
+            close, execv, execvp, fork, gettid, pipe, setpgid, tcgetpgrp, tcsetpgrp, ForkResult,
+            Pid,
+        },
+    };
     use std::{
         env,
+        ffi::CString,
+        fs::OpenOptions,
+        io,
         ops::{Deref, DerefMut},
+        os::fd::{AsRawFd, IntoRawFd, OwnedFd},
         path::Path,
         process::{Child, Stdio},
     };
@@ -38,6 +55,7 @@ pub mod cmd {
 
     pub struct ProcessStatus {
         name: String,
+        pid: u32,
         status: i32,
     }
 
@@ -75,116 +93,149 @@ pub mod cmd {
                 },
                 "exit" => std::process::exit(0),
 
-                (_) => {
-                    let mut proc = std::process::Command::new(&self.command)
-                        .args(&self.args)
-                        .stdin(Stdio::inherit())
-                        .stdout(Stdio::inherit())
-                        .spawn();
-                    if let Ok(mut process) = proc {
-                        if let Ok(mut res) = process.wait() {
-                            if !res.success() {
-                                println!("{}", res);
-                            }
-                        }
-                    } else {
-                        if let Err(mut process) = proc {
-                            println!("{}", process);
-                        }
-                    }
+                _ => {
+                    let tty = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open("/dev/tty")
+                        .expect("err");
+                    let fg_pid = tcgetpgrp(&tty).unwrap();
+                    execute_simple(&tty, fg_pid, self, self.background);
                 }
+            }
+        }
+    }
+
+    fn execute_simple(
+        tty: &std::fs::File,
+        fg_pid: Pid,
+        cmd: &SimpleCommand,
+        background: bool,
+    ) -> i32 {
+        match unsafe { fork() } {
+            Ok(ForkResult::Child) => {
+                let mut mask = SigSet::empty();
+                mask.add(Signal::SIGSTOP);
+                mask.add(Signal::SIGKILL);
+                mask.add(Signal::SIGTTOU);
+                mask.add(Signal::SIGINT);
+                nix::sys::signal::sigprocmask(SigmaskHow::SIG_UNBLOCK, Some(&mask), None).unwrap();
+                let cstring = CString::new(cmd.command.as_str()).unwrap();
+                let mut args: Vec<CString> = Vec::new();
+                for arg in cmd.args.iter() {
+                    args.push(CString::new(arg.as_str()).unwrap());
+                }
+                execvp(&cstring, &args).unwrap();
+
+                unsafe {
+                    exit(1);
+                }
+            }
+            Ok(ForkResult::Parent { child }) => {
+                nix::unistd::setpgid(child, child).unwrap();
+                if !background {
+                    tcsetpgrp(&tty, child).unwrap();
+                    let status: WaitStatus = waitpid(child, None).unwrap();
+                    tcsetpgrp(&tty, fg_pid).unwrap();
+                    return match status {
+                        WaitStatus::Exited(_, code) => code,
+                        _ => 1,
+                    };
+                }
+                return 0;
+            }
+            Err(_) => {
+                println!("child");
+                return 1;
             }
         }
     }
 
     impl Execute for CommandList {
         fn execute(&self, processList: &mut Vec<ProcessStatus>) {
+            let tty = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/tty")
+                .expect("err");
+            let fg_pid = tcgetpgrp(&tty).unwrap();
             match self.kind {
                 CommandListType::OR => {
                     for cmd in self.commands.iter() {
-                        let mut proc = std::process::Command::new(&cmd.command)
-                            .args(&cmd.args)
-                            .stdin(Stdio::inherit())
-                            .stdout(Stdio::inherit())
-                            .spawn();
-                        if let Ok(mut cmd) = proc {
-                            let res = cmd.wait().unwrap();
-                            if res.success() {
-                                break;
-                            }
+                        if execute_simple(&tty, fg_pid, cmd, false) == 0 {
+                            break;
                         }
                     }
                 }
                 CommandListType::AND => {
                     for cmd in self.commands.iter() {
-                        let mut proc = std::process::Command::new(&cmd.command)
-                            .args(&cmd.args)
-                            .stdin(Stdio::inherit())
-                            .stdout(Stdio::inherit())
-                            .spawn();
-                        if let Ok(mut cmd) = proc {
-                            let res = cmd.wait().unwrap();
-                            if !res.success() {
-                                break;
-                            }
+                        if execute_simple(&tty, fg_pid, cmd, false) != 0 {
+                            break;
                         }
                     }
                 }
                 CommandListType::PIPE => {
-                    let mut cmds: Vec<Child> = Vec::new();
-                    for (i, cmd) in self.commands.iter().enumerate() {
-                        if i == 0 {
-                            let mut child = std::process::Command::new(&cmd.command)
-                                .args(&cmd.args)
-                                .stdin(Stdio::inherit())
-                                .stdout(Stdio::piped())
-                                .spawn();
-                            if let Ok(proc) = child {
-                                cmds.push(proc)
-                            } else {
-                                cmds.iter_mut().for_each(move |p| p.kill().unwrap());
-                                println!("Failed at {}", cmd.command);
-                                break;
-                            }
-                        } else if i == self.commands.len() - 1 {
-                            let mut child = std::process::Command::new(&cmd.command)
-                                .args(&cmd.args)
-                                .stdin(Stdio::from(
-                                    cmds[i - 1]
-                                        .stdout
-                                        .take()
-                                        .expect("Who took my filedescriptor???"),
-                                ))
-                                .stdout(Stdio::inherit())
-                                .spawn();
-                            if let Ok(process) = child {
-                                cmds.push(process);
-                            } else {
-                                println!("failed to execute {}", cmd.command);
-                                cmds.iter_mut().for_each(|p| p.kill().unwrap());
-                                break;
-                            }
-                        } else {
-                            let mut child = std::process::Command::new(&cmd.command)
-                                .args(&cmd.args)
-                                .stdin(Stdio::from(cmds[i - 1].stdout.take().unwrap()))
-                                .stdout(Stdio::piped())
-                                .spawn();
-                            if let Ok(process) = child {
-                                cmds.push(process);
-                            } else {
-                                cmds.iter_mut().for_each(|p| p.kill().unwrap());
-                                println!(
-                                    "Failed to execute 
-                                    {}",
-                                    cmd.command
+                    let mut cmds: Vec<Pid> = Vec::new();
+                    let mut fds: Vec<(OwnedFd, OwnedFd)> = Vec::new();
+                    for _ in self.commands.iter() {
+                        fds.push(pipe().unwrap());
+                    }
+                    for (i, command) in self.commands.iter().enumerate() {
+                        match unsafe { fork() } {
+                            Ok(ForkResult::Child) => {
+                                let mut mask = SigSet::empty();
+                                mask.add(Signal::SIGSTOP);
+                                mask.add(Signal::SIGKILL);
+                                mask.add(Signal::SIGTTOU);
+                                mask.add(Signal::SIGINT);
+                                nix::sys::signal::sigprocmask(
+                                    SigmaskHow::SIG_UNBLOCK,
+                                    Some(&mask),
+                                    None,
                                 )
+                                .unwrap();
+                                let cstring = CString::new(command.command.as_str()).unwrap();
+                                let mut args: Vec<CString> = Vec::new();
+                                for arg in command.args.iter() {
+                                    args.push(CString::new(arg.as_str()).unwrap());
+                                }
+                                if i == 0 {
+                                    unsafe {
+                                        dup2(fds.first().unwrap().1.as_raw_fd(), STDOUT_FILENO);
+                                    }
+                                } else if i == &self.commands.len() - 1 {
+                                    unsafe {
+                                        dup2(fds.get(i - 1).unwrap().0.as_raw_fd(), STDIN_FILENO);
+                                    }
+                                } else {
+                                    unsafe {
+                                        dup2(fds.get_mut(i).unwrap().1.as_raw_fd(), STDOUT_FILENO);
+                                        dup2(
+                                            fds.get_mut(i - 1).unwrap().0.as_raw_fd(),
+                                            STDIN_FILENO,
+                                        );
+                                    }
+                                }
+                                drop(fds);
+                                execvp(&cstring, &args).unwrap();
                             }
+                            Ok(ForkResult::Parent { child }) => {
+                                cmds.push(child);
+                                setpgid(child, *cmds.first().unwrap())
+                                    .expect("Error settng process group");
+                            }
+                            Err(_) => {}
                         }
                     }
-                    for cmd in cmds.iter_mut() {
-                        cmd.wait().unwrap();
+                    // Owned fds are closed upon fds being freed, so closing them manually
+                    // causes a double close hence we drop fds here, which closes them
+                    drop(fds);
+
+                    tcsetpgrp(&tty, *cmds.first().unwrap());
+                    for pid in cmds.iter() {
+                        waitpid(*pid, None).unwrap();
                     }
+                    tcsetpgrp(&tty, fg_pid).unwrap();
                 }
             }
         }
