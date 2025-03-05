@@ -23,6 +23,8 @@ pub mod cmd {
         path::Path,
         process::{Child, Stdio},
     };
+
+    use crate::PROCESS_LIST;
     pub enum Command {
         SimpleCommand(SimpleCommand),
         CommandList(CommandList),
@@ -55,7 +57,7 @@ pub mod cmd {
 
     pub struct ProcessStatus {
         name: String,
-        pid: u32,
+        pid: Pid,
         status: i32,
     }
 
@@ -141,6 +143,13 @@ pub mod cmd {
                         WaitStatus::Exited(_, code) => code,
                         _ => 1,
                     };
+                } else {
+                    let mut list = PROCESS_LIST.lock().unwrap();
+                    list.push(ProcessStatus {
+                        name: cmd.command.clone(),
+                        status: 0,
+                        pid: child,
+                    });
                 }
                 return 0;
             }

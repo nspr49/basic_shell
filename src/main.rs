@@ -2,7 +2,10 @@ use std::{
     error::Error,
     io::{self, stdin, Read, Write},
     os::fd::AsRawFd,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
 };
 
@@ -18,17 +21,25 @@ use nix::{
     },
     unistd::Pid,
 };
-use signal_hook::{consts::SIGINT, consts::SIGSTOP, iterator::Signals};
+use once_cell::sync::Lazy;
+use signal_hook::{
+    consts::{SIGINT, SIGSTOP},
+    iterator::{exfiltrator::WithOrigin, Signals, SignalsInfo},
+};
 
 mod command;
 
-static SIGNALED: AtomicBool = AtomicBool::new(false);
+static PROCESS_LIST: Lazy<Arc<Mutex<Vec<ProcessStatus>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(Vec::new())));
 
 extern "C" fn handle_sigchild(
     sig: libc::c_int,
     info: *mut libc::siginfo_t,
     _context: *mut libc::c_void,
 ) {
+    let list = PROCESS_LIST.lock().unwrap();
+    for item in list.iter() {}
+    /*
     unsafe {
         if !info.is_null() {
             let pid = (*info).si_pid(); // PID of the process that sent the signal
@@ -36,6 +47,7 @@ extern "C" fn handle_sigchild(
             waitpid(Pid::from_raw(pid), Some(WaitPidFlag::WNOHANG)).unwrap();
         }
     }
+    */
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -55,6 +67,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     unsafe {
         signal::sigaction(Signal::SIGCHLD, &sig_action).expect("Failed to set SIGCHLD handler");
     }
+
+    thread::spawn(move || {
+        let mut signals: signal_hook::iterator::SignalsInfo<WithOrigin> =
+            signal_hook::iterator::SignalsInfo::<WithOrigin>::new(&[nix::libc::SIGCHLD])
+                .expect("Failed to create signal handler");
+
+        for sig_info in signals.forever() {
+            if sig_info.signal == nix::libc::SIGCHLD {}
+        }
+    });
 
     let mut processList: Vec<ProcessStatus> = Vec::new();
     loop {

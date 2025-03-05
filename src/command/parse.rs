@@ -1,6 +1,8 @@
+use std::sync::{Arc, Mutex};
+
 use regex::Regex;
 
-use super::command::cmd::{Command, CommandList, NoCommand, SimpleCommand};
+use super::command::cmd::{Command, CommandList, NoCommand, ProcessStatus, SimpleCommand};
 
 pub fn parse(cmd_argument: &mut String) -> Command {
     if cmd_argument.is_empty() {}
