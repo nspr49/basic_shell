@@ -5,7 +5,6 @@ use regex::Regex;
 use super::command::cmd::{Command, CommandList, NoCommand, ProcessStatus, SimpleCommand};
 
 pub fn parse(cmd_argument: &mut String) -> Command {
-    if cmd_argument.is_empty() {}
     cmd_argument.pop();
     let basic_cmd = r"[a-zA-Z-]+(?:\s+[a-zA-Z-]+)*";
     let basic_background = Regex::new(&format!("^{}[ ]+&[ ]*$", basic_cmd)).unwrap();
@@ -20,14 +19,14 @@ pub fn parse(cmd_argument: &mut String) -> Command {
         let mut cmd: Vec<&str> = cmd_argument.split_whitespace().collect();
         cmd.pop().unwrap();
         let res = extract_simple(&cmd);
-        return match res.0 {
+        match res.0 {
             Some(command) => Command::SimpleCommand(SimpleCommand {
                 command: String::from(command),
                 args: res.1.to_owned(),
                 background: true,
             }),
             None => Command::NoCommand,
-        };
+        }
     } else if and_regex.is_match(cmd_argument) {
         let list = get_command_list(cmd_argument, "&&");
         return Command::CommandList(CommandList {
@@ -66,16 +65,15 @@ fn get_command_list(command_string: &str, separator: &str) -> Vec<SimpleCommand>
     for val in vals {
         let single_command: Vec<&str> = val.split_whitespace().collect();
         let res = extract_simple(&single_command);
-        match res.0 {
-            Some(command) => cmd_list.push(SimpleCommand {
+        if let Some(command) = res.0 {
+            cmd_list.push(SimpleCommand {
                 command: String::from(command),
                 args: res.1.to_owned(),
                 background: false,
-            }),
-            None => {}
-        }
+            })
+        };
     }
-    return cmd_list;
+    cmd_list
 }
 
 fn extract_simple<'a>(arguments: &'a Vec<&str>) -> (Option<&'a str>, Vec<String>) {

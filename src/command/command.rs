@@ -1,27 +1,18 @@
 pub mod cmd {
     use home::home_dir;
     use nix::{
-        libc::{
-            dup, dup2, execvpe, exit, getpgid, getpid, kill, killpg, STDIN_FILENO, STDOUT_FILENO,
-        },
+        libc::{dup2, exit, STDIN_FILENO, STDOUT_FILENO},
         sys::{
-            signal::{sigprocmask, SigSet, SigmaskHow, Signal},
-            wait::{self, wait, waitpid, WaitStatus},
+            signal::{SigSet, SigmaskHow, Signal},
+            wait::{waitpid, WaitStatus},
         },
-        unistd::{
-            close, execv, execvp, fork, gettid, pipe, setpgid, tcgetpgrp, tcsetpgrp, ForkResult,
-            Pid,
-        },
+        unistd::{execvp, fork, pipe, setpgid, tcgetpgrp, tcsetpgrp, ForkResult, Pid},
     };
     use std::{
-        env,
         ffi::CString,
         fs::OpenOptions,
-        io,
-        ops::{Deref, DerefMut},
-        os::fd::{AsRawFd, IntoRawFd, OwnedFd},
+        os::fd::{AsRawFd, OwnedFd},
         path::Path,
-        process::{Child, Stdio},
     };
 
     use crate::PROCESS_LIST;
@@ -52,23 +43,23 @@ pub mod cmd {
     }
 
     pub trait Execute {
-        fn execute(&self, processList: &mut Vec<ProcessStatus>);
+        fn execute(&self);
     }
 
     pub struct ProcessStatus {
-        name: String,
-        pid: Pid,
+        pub name: String,
+        pub pid: Pid,
         status: i32,
     }
 
     impl Command {
-        pub fn execute(&self, processList: &mut Vec<ProcessStatus>) {
+        pub fn execute(&self) {
             match &self {
                 &Self::CommandList(cmd) => {
-                    cmd.execute(processList);
+                    cmd.execute();
                 }
                 &Self::SimpleCommand(cmd) => {
-                    cmd.execute(processList);
+                    cmd.execute();
                 }
                 &Self::NoCommand => {}
             }
@@ -76,7 +67,7 @@ pub mod cmd {
     }
 
     impl Execute for SimpleCommand {
-        fn execute(&self, processList: &mut Vec<ProcessStatus>) {
+        fn execute(&self) {
             match self.command.as_str() {
                 "cd" => match self.args.len() {
                     0 => {
@@ -161,7 +152,7 @@ pub mod cmd {
     }
 
     impl Execute for CommandList {
-        fn execute(&self, processList: &mut Vec<ProcessStatus>) {
+        fn execute(&self) {
             let tty = OpenOptions::new()
                 .read(true)
                 .write(true)
